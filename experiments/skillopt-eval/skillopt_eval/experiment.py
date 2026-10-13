@@ -234,8 +234,6 @@ def _aggregate(runs: List[RunRecord]) -> Dict[str, Any]:
         "mean_latency_ms": _mean("latency_ms"),
         "failures": failures,
     }
-
-
 def _verdict(comparison: evalkit.EvalReport,
              metrics: Dict[str, Any], candidate_changed: bool) -> Dict[str, Any]:
     """Quality is the gate; cost is informational."""
