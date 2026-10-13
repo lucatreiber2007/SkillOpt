@@ -177,6 +177,9 @@ def test_end_to_end_artifacts(tmp_path):
         assert key in rows[0]
     traj = out / rows[0]["trajectory_file"]
     assert traj.is_file()
+    trajectory_files = [row["trajectory_file"] for row in rows]
+    assert len(trajectory_files) == len(set(trajectory_files))
+    assert {row["condition"] for row in rows if row["split"] == "validation"} >= {"baseline", "opt:0"}
 
     # provenance is complete enough to reproduce
     prov = results["provenance"]
@@ -194,7 +197,7 @@ def test_aa_no_claim(tmp_path):
     comp = results["test_split"]["comparison"]
     assert comp["delta"] == 0.0
     assert results["verdict"]["quality_improved"] is False
-    assert "no candidate beats" in results["verdict"]["summary"]
+    assert "A/A control" in results["verdict"]["summary"]
 
 
 def test_mock_runner_deterministic(tmp_path):

@@ -19,6 +19,7 @@ Contracts enforced here (not in the runners):
 from __future__ import annotations
 
 import time
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -59,8 +60,7 @@ def _run_batch(
     for sid in scenario_ids:
         for seed in range(seeds_per_task):
             rec = runner.run(sid, skill_text, seed, workdir)
-            rec.condition = condition
-            rec.split = split
+            rec = _label_record(rec, condition, split, workdir)
             if rec.passed is None:
                 rec.passed = False  # fail closed
             records.append(rec)
@@ -99,10 +99,12 @@ def run_experiment(
     best_text = baseline_text
     best_val = 0.0
     if cfg.optimize_steps > 0 and cfg.validation:
-        best_val = _mean_pass(_run_batch(
+        baseline_validation = _run_batch(
             runner, split.validation, best_text,
             "baseline", "validation", cfg.seeds_per_task, out_dir,
-        ))
+        )
+        records.extend(baseline_validation)
+        best_val = _mean_pass(baseline_validation)
     proposer = build_proposer(cfg.candidates, cfg.learning_rate, cfg.runner)
     rejected_hashes: List[str] = []
     for step in range(cfg.optimize_steps):
@@ -121,7 +123,10 @@ def run_experiment(
         )
         records.extend(train_records + val_records)
         val_score = _mean_pass(val_records)
-        errored = [r for r in val_records if r.error and not r.checks]
+        errored = [r for r in val_records if r.error or r.failure in {
+            "timeout", "nonzero_exit", "malformed_output", "missing_score",
+            "incomplete_trajectory", "harness_error",
+        }]
         if edit.content_hash in rejected_hashes:
             decision, reason = "rejected", "duplicate of a rejected candidate"
         elif val_score > best_val:
@@ -152,8 +157,7 @@ def run_experiment(
             for condition, text in (("baseline", baseline_text),
                                     ("candidate", best_text)):
                 rec = runner.run(sid, text, seed, out_dir)
-                rec.condition = condition
-                rec.split = "test"
+                rec = _label_record(rec, condition, "test", out_dir)
                 if rec.passed is None:
                     rec.passed = False
                 test_records.append(rec)
@@ -174,7 +178,7 @@ def run_experiment(
         "baseline": _aggregate(baseline_runs),
         "candidate": _aggregate(candidate_runs),
     }
-    verdict = _verdict(comparison, metrics)
+    verdict = _verdict(comparison, metrics, candidate_changed=optimized)
 
     return write_artifacts(
         out_dir=out_dir,
@@ -233,12 +237,12 @@ def _aggregate(runs: List[RunRecord]) -> Dict[str, Any]:
 
 
 def _verdict(comparison: evalkit.EvalReport,
-             metrics: Dict[str, Any]) -> Dict[str, Any]:
+             metrics: Dict[str, Any], candidate_changed: bool) -> Dict[str, Any]:
     """Quality is the gate; cost is informational."""
     significant = bool(
         comparison.mcnemar and comparison.mcnemar.significant
     ) or (comparison.bootstrap.low > 0 or comparison.bootstrap.high < 0)
-    quality_improved = comparison.delta > 0 and significant
+    quality_improved = candidate_changed and comparison.delta > 0 and significant
     quality_regressed = comparison.delta < 0 and significant
     cost_notes = []
     for key in ("mean_tokens", "mean_latency_ms", "mean_tool_calls"):
@@ -247,7 +251,10 @@ def _verdict(comparison: evalkit.EvalReport,
         if a is not None and b is not None:
             pct = (b - a) / a * 100 if a else 0.0
             cost_notes.append(f"{key}: {pct:+.1f}%")
-    if quality_improved:
+    if not candidate_changed:
+        summary = ("A/A control: baseline and candidate are identical, so observed run "
+                   "variation is not a candidate effect and no improvement is claimed.")
+    elif quality_improved:
         summary = ("Candidate strictly improved held-out test quality; "
                    "adoption remains an explicit human decision.")
     elif quality_regressed:
@@ -264,3 +271,25 @@ def _verdict(comparison: evalkit.EvalReport,
         "cost_notes": cost_notes,
         "summary": summary,
     }
+def _label_record(record: RunRecord, condition: str, split: str, workdir: Path) -> RunRecord:
+    """Give every invocation immutable condition/split provenance.
+
+    Runners write their trajectory before the experiment layer knows which
+    condition it belongs to. Rename and rewrite it immediately so a repeated
+    scenario/seed can never overwrite baseline evidence.
+    """
+    record.condition = condition
+    record.split = split
+    suffix = f"--{condition.replace(':', '-')}-{split}"
+    record.run_id = f"{record.run_id}{suffix}"
+    if record.trajectory_file:
+        source = workdir / record.trajectory_file
+        target = source.with_name(f"{record.run_id}.json")
+        if source.is_file():
+            payload = json.loads(source.read_text(encoding="utf-8"))
+            payload.update({"run_id": record.run_id, "condition": condition, "split": split})
+            target.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
+            source.unlink()
+            record.trajectory_file = str(target.relative_to(workdir)).replace("\\", "/")
+    return record
+
