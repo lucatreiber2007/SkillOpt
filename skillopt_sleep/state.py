@@ -14,7 +14,9 @@ from __future__ import annotations
 import copy
 import json
 import os
-from typing import Any, Dict, Optional
+import tempfile
+from contextlib import contextmanager
+from typing import Any, Dict, Iterator, Optional
 
 
 def _now_iso(clock: Optional[float] = None) -> str:
@@ -44,25 +46,69 @@ class SleepState:
         self.data = data if data is not None else copy.deepcopy(DEFAULT_STATE)
 
     # io ---------------------------------------------------------------------
+    @staticmethod
+    @contextmanager
+    def lock(path: str) -> Iterator[None]:
+        """Refuse overlapping writers before they read or start model work."""
+        lock_path = os.path.realpath(path) + ".lock"
+        os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+        descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        locked = False
+        try:
+            if os.name == "nt":
+                import msvcrt
+                if os.fstat(descriptor).st_size == 0:
+                    os.write(descriptor, b"\0")
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                try:
+                    msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+                except OSError as error:
+                    raise RuntimeError("Sleep state is busy; retry after the active cycle finishes") from error
+            else:
+                import fcntl
+                try:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except OSError as error:
+                    raise RuntimeError("Sleep state is busy; retry after the active cycle finishes") from error
+            locked = True
+            yield
+        finally:
+            try:
+                if locked:
+                    if os.name == "nt":
+                        os.lseek(descriptor, 0, os.SEEK_SET)
+                        msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+                    else:
+                        fcntl.flock(descriptor, fcntl.LOCK_UN)
+            finally:
+                os.close(descriptor)
+
     @classmethod
     def load(cls, path: str) -> "SleepState":
-        if os.path.exists(path):
-            try:
-                with open(path) as f:
-                    data = json.load(f)
-                merged = copy.deepcopy(DEFAULT_STATE)
-                merged.update(data if isinstance(data, dict) else {})
-                return cls(path, merged)
-            except Exception:
-                pass
-        return cls(path, copy.deepcopy(DEFAULT_STATE))
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except FileNotFoundError:
+            return cls(path, copy.deepcopy(DEFAULT_STATE))
+        if not isinstance(data, dict):
+            raise ValueError("Sleep state must contain a JSON object")
+        merged = copy.deepcopy(DEFAULT_STATE)
+        merged.update(data)
+        return cls(path, merged)
 
     def save(self) -> None:
-        os.makedirs(os.path.dirname(self.path), exist_ok=True)
-        tmp = self.path + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(self.data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, self.path)
+        directory = os.path.dirname(self.path) or "."
+        os.makedirs(directory, exist_ok=True)
+        descriptor, tmp = tempfile.mkstemp(prefix=".sleep-state-", suffix=".tmp", dir=directory)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as f:
+                json.dump(self.data, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, self.path)
+        finally:
+            try:
+                os.unlink(tmp)
+            except FileNotFoundError:
+                pass
 
     # accessors --------------------------------------------------------------
     @property
