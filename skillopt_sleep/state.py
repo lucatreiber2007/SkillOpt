@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import copy
 import json
+import locale
 import os
 import tempfile
 from contextlib import contextmanager
@@ -86,10 +87,24 @@ class SleepState:
     @classmethod
     def load(cls, path: str) -> "SleepState":
         try:
-            with open(path, encoding="utf-8") as f:
-                data = json.load(f)
+            with open(path, "rb") as f:
+                raw = f.read()
         except FileNotFoundError:
             return cls(path, copy.deepcopy(DEFAULT_STATE))
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError as utf8_error:
+            # Earlier writers used the locale codec (for example GBK or cp1252);
+            # the next save() rewrites the file as UTF-8.
+            codec = locale.getpreferredencoding(False)
+            try:
+                text = raw.decode(codec)
+            except (UnicodeDecodeError, LookupError):
+                raise ValueError(
+                    f"{path} is neither UTF-8 nor {codec}; it was left unchanged. "
+                    "Convert it to UTF-8 or move it aside to start a fresh state."
+                ) from utf8_error
+        data = json.loads(text)
         if not isinstance(data, dict):
             raise ValueError("Sleep state must contain a JSON object")
         merged = copy.deepcopy(DEFAULT_STATE)

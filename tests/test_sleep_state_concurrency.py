@@ -1,4 +1,5 @@
 """Only one cycle may read/update/save a shared state at a time."""
+import json
 import multiprocessing
 import os
 from types import SimpleNamespace
@@ -118,6 +119,28 @@ def test_corrupt_state_is_refused_without_replacement(tmp_path, invalid):
     with pytest.raises(ValueError):
         SleepState.load(str(path))
     assert path.read_text(encoding="utf-8") == invalid
+
+
+@pytest.mark.parametrize("codec, note", [("gbk", "计划"), ("cp1252", "café")])
+def test_legacy_locale_state_loads_and_saves_as_utf8(tmp_path, monkeypatch, codec, note):
+    path = tmp_path / "state.json"
+    path.write_bytes(json.dumps({"night": 4, "note": note}, ensure_ascii=False).encode(codec))
+    monkeypatch.setattr(state_module.locale, "getpreferredencoding", lambda do_setlocale=True: codec)
+    state = SleepState.load(str(path))
+    assert state.data["night"] == 4
+    assert state.data["note"] == note
+    state.save()
+    assert json.loads(path.read_text(encoding="utf-8"))["note"] == note
+
+
+def test_undecodable_state_names_the_file_and_is_left_unchanged(tmp_path, monkeypatch):
+    path = tmp_path / "state.json"
+    original = b'{"note": "\xff\xfe\x81"}'
+    path.write_bytes(original)
+    monkeypatch.setattr(state_module.locale, "getpreferredencoding", lambda do_setlocale=True: "ascii")
+    with pytest.raises(ValueError, match="state.json is neither UTF-8 nor ascii"):
+        SleepState.load(str(path))
+    assert path.read_bytes() == original
 
 
 def test_cycle_and_handoff_share_the_transaction_lock(tmp_path, monkeypatch):
