@@ -179,6 +179,20 @@ One engine, thin per-agent shells (see [`plugins/`](https://github.com/microsoft
 | **Devin** | [`plugins/devin`](https://github.com/microsoft/SkillOpt/tree/main/plugins/devin) | register `plugins/devin/mcp_server.py` as an MCP server |
 | **OpenClaw** | [`plugins/openclaw`](https://github.com/microsoft/SkillOpt/tree/main/plugins/openclaw) | adapt the reference wrapper and paths for your installation |
 
+### Configuration files
+
+Sleep reads `~/.skillopt-sleep/config.json`, falling back to `config.yaml` or
+`config.yml` when the earlier names are absent. YAML requires PyYAML.
+Save new files as UTF-8. Existing files written with the system's legacy
+encoding (for example, GBK or cp1252) are still readable under that locale:
+Sleep tries UTF-8 first, then the system encoding, and warns when the latter is
+used. Open the file with its original encoding and save it as UTF-8 before
+moving it to a machine with a different locale. Sleep does not rewrite it.
+
+An existing file that cannot be decoded, parsed, or read stops the command
+with a configuration error and exit code 2; it does not discard your settings
+and run with default budgets. Explicit CLI flags still override loaded values.
+
 ### VS Code GitHub Copilot Chat
 
 Use `--source copilot` to harvest local VS Code GitHub Copilot Chat sessions.
@@ -344,6 +358,60 @@ documents the separate HTTPS-only boundary for Azure managed-identity credential
 Deterministic proof (no API key):
 `python -m skillopt_sleep.experiments.run_experiment --persona researcher --assert-improves`.
 
+### Nightly token budget
+
+`max_tokens_per_night` in `~/.skillopt-sleep/config.json` (default `400000`)
+stops a `run` or `dry-run` from starting more model work once tonight's spend
+reaches it. The cycle checks the budget before the consolidation, before its
+skill and memory edit steps, before its final validation replay, before the
+held-out test replay, and before each per-skill fan-out group. Steps that did
+not start are listed in a note in `report.md`, for example
+`max_tokens_per_night reached (431870 of 400000 tokens); skipped: memory edits, final validation replay`.
+
+When the final validation replay is skipped, the gate decides from the
+validation replay that already scored the same skill and memory: the baseline
+replay when no edit was kept, or the trial replay of the last edit that was
+kept. That replay is complete, so no decision rests on partial evidence, and
+it is not repeated. This matters for replays the response cache does not
+serve, such as tool replay or a call that failed or timed out, which would
+otherwise start the model again.
+
+```json
+{"max_tokens_per_night": 200000}
+```
+
+Set the value to `0` or `null` for no budget. Anything other than a whole,
+non-negative number stops the run with an error before any model call. There
+is no elapsed-time budget.
+
+This is not a hard cap. A step that has started always finishes, so a night
+can end above the budget by the cost of one step: the first replay of the
+validation and training tasks, one edit step (a training replay, a reflect
+call and a validation replay of the candidate; with `dream_rollouts` set to K,
+K attempts per training task), the final validation replay, or the held-out
+test replay. Each fan-out group that starts runs its own first replay.
+
+Spend comes from the backend's token counter, the one the report header prints
+as `tokens used`. The header shows the backend's running total and the note
+shows tonight's spend; they are equal unless a caller reuses one backend object
+across nights. What the counter covers depends on the backend:
+
+- CLI backends estimate tokens from prompt and reply length. LLM task mining and
+  contrastive reflection (`dream_rollouts` above 1) call the model directly and
+  are not counted.
+- `azure_openai` adds the usage reported by the API to that estimate, so it
+  counts mining, and replay and reflect calls count roughly twice.
+- `handoff` counts the prompt and answer text of the current round. A budget
+  check that finds unanswered prompts pauses the round for answers instead of
+  stopping it, so a round only stops on the budget once every counted call has
+  a real answer.
+- `mock` reports no usage and never reaches the budget.
+
+A night that stops on the budget still advances the harvest checkpoint, so its
+sessions are not mined again, and skipped work is not retried on a later night.
+Tonight's tasks stay in the task archive, which later nights only use through
+`recall_k`.
+
 ### Opt-in: per-skill fan-out
 
 Set `"multi_skill_fanout": true` in `~/.skillopt-sleep/config.json` to add an
@@ -388,6 +456,14 @@ correctness signal; the validation gate still governs what ships.
 | `dream_rollouts` | `1` | Run each task K times → learn from the good-vs-bad contrast (contrastive reflection). |
 | `recall_k` | `0` | Associative recall — pull the K most-similar past tasks (from a persisted archive) into tonight's dream. |
 | `dream_factor` | `0` | Add N lightweight synthetic variants of each task. |
+
+The nightly cycle persists task split exposure separately from the capped recall
+archive. Once a task has entered training, re-mining it or a recorded derivative
+cannot move it into validation or test; validation exposure likewise prevents
+later claims of pristine test coverage. This also applies to small-pool fallback
+assignments across growing or shrinking nightly pools. Restored assignments emit
+a warning when they reduce holdout coverage. If no disjoint validation pool
+remains, the existing gate reports leakage and does not certify the edits.
 
 ### Paired A/B evalkit
 
