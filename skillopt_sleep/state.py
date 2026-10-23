@@ -5,7 +5,8 @@ turns nightly episodes into durable competence (the Agent-Sleep paper's
 short-term -> long-term transfer). It records:
 
   - night counter
-  - last harvest timestamp per project (so each night only sees new data)
+  - last harvest timestamp per project and transcript source (so each night
+    only sees new data from the store that source reads)
   - cross-night "slow/meta" memory (lessons that persisted across nights)
   - per-night history (scores, accept/reject) for trend reporting
 """
@@ -94,10 +95,28 @@ def _now_iso(clock: Optional[float] = None) -> str:
     return _t.strftime("%Y-%m-%dT%H:%M:%S", _t.localtime(clock if clock is not None else _t.time()))
 
 
+HARVEST_KEY_SEP = "::"
+
+
+def harvest_cursor_key(project: str, source: str = "") -> str:
+    """Key of one harvest checkpoint: one cursor per project AND source.
+
+    Every transcript source reads a different store with its own timestamps,
+    so a single project-wide cursor makes the second source of a project skip
+    its older, never-harvested sessions for good (#312).
+    """
+    project = str(project or "")
+    source = str(source or "")
+    return f"{project}{HARVEST_KEY_SEP}{source}" if source else project
+
+
 DEFAULT_STATE: Dict[str, Any] = {
     "version": 1,
     "night": 0,
-    "last_harvest": {},     # project -> iso timestamp of last harvested record
+    # "<project>::<transcript_source>" -> iso timestamp of last harvested
+    # record (bare "<project>" keys written before checkpoints were split per
+    # source are still read, see last_harvest_for)
+    "last_harvest": {},
     "slow_memory": "",      # cross-night consolidated lessons (meta-skill analogue)
     "history": [],          # list of per-night summaries
     "task_archive": [],     # capped list of past mined tasks (for associative recall)
@@ -185,11 +204,25 @@ class SleepState:
     def night(self) -> int:
         return int(self.data.get("night", 0))
 
-    def last_harvest_for(self, project: str) -> Optional[str]:
-        return self.data.get("last_harvest", {}).get(project)
+    def last_harvest_for(self, project: str, source: str = "") -> Optional[str]:
+        """Last harvest time for ``project`` from transcript ``source``.
 
-    def set_last_harvest(self, project: str, iso_ts: str) -> None:
-        self.data.setdefault("last_harvest", {})[project] = iso_ts
+        A bare ``project`` key (written before checkpoints were split per
+        source) is used as the fallback, so an upgrade does not re-scan the
+        whole transcript history; it is never overwritten, because it is the
+        only cursor older state files have.
+        """
+        cursors = self.data.get("last_harvest", {})
+        if source:
+            key = harvest_cursor_key(project, source)
+            if key in cursors:
+                return cursors[key]
+        return cursors.get(str(project))
+
+    def set_last_harvest(self, project: str, iso_ts: str, source: str = "") -> None:
+        self.data.setdefault("last_harvest", {})[
+            harvest_cursor_key(project, source)
+        ] = iso_ts
 
     @property
     def slow_memory(self) -> str:

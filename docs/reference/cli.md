@@ -418,6 +418,11 @@ a new harvest checkpoint; subsequent runs use that checkpoint rather than the
 initial lookback. Use `harvest` or `dry-run` to verify counts before the first
 stateful run.
 
+There is one checkpoint per project **and transcript source**, because each
+source reads a different store with its own timestamps. Feeding one project from
+several sources therefore keeps a separate window per source, and a run of one
+source does not advance another source's window.
+
 The managed `schedule` command persists the project, backend, time, and optional
 auto-adopt setting only. It does not copy source, Cursor paths, model, or target
 skill flags into the scheduled command. Put `transcript_source`, `cursor_home`,

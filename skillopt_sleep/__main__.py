@@ -429,7 +429,7 @@ def _handoff_mine_and_pin_locked(cfg, args, backend, snapshot: str, dry: bool):
                   file=sys.stderr)
             digests = None
     if digests is None:
-        since = state.last_harvest_for(project)
+        since = state.last_harvest_for(project, cfg.get("transcript_source", ""))
         lookback_hours = cfg.get("lookback_hours", 72)
         if since is None and lookback_hours and lookback_hours > 0:
             since = _now_iso(time.time() - lookback_hours * 3600)
@@ -481,7 +481,7 @@ def _handoff_mine_and_pin_locked(cfg, args, backend, snapshot: str, dry: bool):
         if not dry:
             # Advance the harvest window like run_sleep_cycle's no-tasks
             # branch, or every later run re-scans the same stale window.
-            state.set_last_harvest(project, started)
+            state.set_last_harvest(project, started, cfg.get("transcript_source", ""))
             state.save()
         return 0, None
     payload = make_tasks_payload(
