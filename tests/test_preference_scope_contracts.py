@@ -1,10 +1,12 @@
 """Synthetic evidence contracts for #154; no real preference inference is tested."""
 import json
+
 import pytest
 
-from skillopt_sleep.types import SessionDigest
-from skillopt_sleep.mine import heuristic_mine, mine
 from skillopt_sleep.llm_miner import _digest_to_prompt
+from skillopt_sleep.mine import heuristic_mine, mine
+from skillopt_sleep.types import SessionDigest
+
 
 class ScopeEvidenceLoss(AssertionError):
     """Only this known retention gap is allowed to xfail."""
