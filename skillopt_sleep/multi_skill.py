@@ -16,7 +16,6 @@ from typing import Callable, Dict, List, Optional, Sequence
 from skillopt_sleep.backend import Backend, CursorBackendError
 from skillopt_sleep.consolidate import ConsolidationResult, consolidate
 from skillopt_sleep.handoff_backend import PendingCalls
-from skillopt_sleep.staging import StagingError
 from skillopt_sleep.types import SkillGroupReport, TaskRecord
 
 CONSOLIDATED = "consolidated"
@@ -124,7 +123,7 @@ def consolidate_groups(
                 backend, list(group.tasks), group.skill, memory,
                 **group_kwargs,
             )
-        except (PendingCalls, CursorBackendError, StagingError):
+        except (PendingCalls, CursorBackendError):
             # These exceptions are cycle-level control flow, not isolated
             # evidence about one group. Swallowing them can advance/save an
             # incomplete handoff night or weaken Cursor's fail-closed path.

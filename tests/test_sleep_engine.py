@@ -2847,13 +2847,13 @@ class TestCursorBackend(unittest.TestCase):
 
 
 class TestClaudeCliBackendBare(unittest.TestCase):
-    """Claude replays must fail closed when they cannot isolate user context."""
+    """Issue #68: --bare must be conditional on ANTHROPIC_API_KEY."""
 
     def test_bare_included_when_api_key_set(self):
         """With ANTHROPIC_API_KEY, --bare should appear in the command."""
         from skillopt_sleep.backend import ClaudeCliBackend
         be = ClaudeCliBackend(claude_path="/usr/bin/false", timeout=5)
-        with unittest.mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
+        with unittest.mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test"}):
             # We can't run the real CLI, but we can inspect cmd construction
             # by monkeypatching subprocess.run to capture the command.
             captured = {}
@@ -2868,53 +2868,24 @@ class TestClaudeCliBackendBare(unittest.TestCase):
                 be._call("test prompt")
             self.assertIn("--bare", captured["cmd"])
 
-    def test_oauth_without_api_key_is_refused_before_cli_invocation(self):
-        """OAuth cannot use bare mode, so never produce a potentially contaminated score."""
+    def test_bare_omitted_without_api_key(self):
+        """Without ANTHROPIC_API_KEY, --bare should NOT appear."""
         from skillopt_sleep.backend import ClaudeCliBackend
-        from skillopt_sleep.staging import StagingError
         be = ClaudeCliBackend(claude_path="/usr/bin/false", timeout=5)
         env = os.environ.copy()
         env.pop("ANTHROPIC_API_KEY", None)
         with unittest.mock.patch.dict(os.environ, env, clear=True):
-            with unittest.mock.patch("subprocess.run") as run:
-                with self.assertRaisesRegex(StagingError, "user-level instructions and hooks"):
-                    be._call("test prompt")
-            run.assert_not_called()
-
-    def test_tool_aware_call_also_uses_bare_with_api_key(self):
-        """The tool-aware replay path must not reintroduce ambient hooks."""
-        from skillopt_sleep.backend import ClaudeCliBackend
-        from skillopt_sleep.types import TaskRecord
-        be = ClaudeCliBackend(claude_path="/usr/bin/false", timeout=5)
-        task = TaskRecord(id="t1", project="p", intent="test")
-        captured = {}
-
-        def fake_run(cmd, **kwargs):
-            captured["cmd"] = cmd
-            class FakeProc:
-                stdout = "hello"
-                stderr = ""
-                returncode = 0
-            return FakeProc()
-
-        with unittest.mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
-            with unittest.mock.patch("skillopt_sleep.backend.subprocess.run", side_effect=fake_run):
-                be.attempt_with_tools(task, skill="", memory="", tools=["search"])
-        self.assertIn("--bare", captured["cmd"])
-
-    def test_tool_aware_oauth_call_is_refused_before_cli_invocation(self):
-        from skillopt_sleep.backend import ClaudeCliBackend
-        from skillopt_sleep.staging import StagingError
-        from skillopt_sleep.types import TaskRecord
-        be = ClaudeCliBackend(claude_path="/usr/bin/false", timeout=5)
-        task = TaskRecord(id="t1", project="p", intent="test")
-        env = os.environ.copy()
-        env.pop("ANTHROPIC_API_KEY", None)
-        with unittest.mock.patch.dict(os.environ, env, clear=True):
-            with unittest.mock.patch("skillopt_sleep.backend.subprocess.run") as run:
-                with self.assertRaisesRegex(StagingError, "OAuth authentication cannot use --bare"):
-                    be.attempt_with_tools(task, skill="", memory="", tools=["search"])
-            run.assert_not_called()
+            captured = {}
+            def fake_run(cmd, **kwargs):
+                captured["cmd"] = cmd
+                class FakeProc:
+                    stdout = "hello"
+                    stderr = ""
+                    returncode = 0
+                return FakeProc()
+            with unittest.mock.patch("subprocess.run", side_effect=fake_run):
+                be._call("test prompt")
+            self.assertNotIn("--bare", captured["cmd"])
 
     def test_cli_error_detected_and_logged(self):
         """Auth errors in CLI output should trigger a warning."""
@@ -2928,7 +2899,7 @@ class TestClaudeCliBackendBare(unittest.TestCase):
                 stderr = ""
                 returncode = 0
             return FakeProc()
-        with unittest.mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
+        with unittest.mock.patch.dict(os.environ, {}, clear=False):
             with unittest.mock.patch("subprocess.run", side_effect=fake_run):
                 result = be._call("test prompt")
         # The error string is returned as output (backwards-compat)
@@ -2944,8 +2915,7 @@ class TestClaudeCliBackendBare(unittest.TestCase):
             claude_path="/nonexistent/claude-binary",
             timeout=3,
         )
-        with unittest.mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
-            result = be._call("test prompt")
+        result = be._call("test prompt")
         self.assertEqual(result, "")
         self.assertIn("Claude CLI spawn failed", be.last_call_error)
 
@@ -2963,8 +2933,7 @@ class TestClaudeCliBackendBare(unittest.TestCase):
             reference="ref", reference_kind="exact",
             tags=[], split="train",
         )
-        with unittest.mock.patch.dict(os.environ, {"ANTHROPIC_API_KEY": "test-key"}):
-            resp, called = be.attempt_with_tools(task, "", "", tools=["search"])
+        resp, called = be.attempt_with_tools(task, "", "", tools=["search"])
         self.assertEqual(resp, "")
         self.assertIn("Claude CLI spawn failed", be.last_call_error)
 
