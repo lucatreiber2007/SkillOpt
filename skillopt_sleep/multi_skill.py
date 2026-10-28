@@ -177,6 +177,7 @@ def skill_group_reports(
             row.candidate_score = result.candidate_score
             row.n_applied_edits = len(result.applied_edits)
             row.n_rejected_edits = len(result.rejected_edits)
+            row.gate_trials = list(result.gate_trials)
         rows.append(row)
     return rows
 
