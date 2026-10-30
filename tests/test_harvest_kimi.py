@@ -130,3 +130,32 @@ def test_harvest_for_config_kimi_source(tmp_path, monkeypatch) -> None:
                                  since_iso="2026-01-01T00:00:00.000Z")
     assert len(digests) == 1
     assert digests[0].project == "358"
+
+
+def test_engine_replay_sessions_are_filtered(tmp_path):
+    from skillopt_sleep.harvest_kimi import _is_kimi_replay
+
+    class _D:
+        def __init__(self, prompts):
+            self.user_prompts = prompts
+
+    # CLI replay attempt prompt
+    assert _is_kimi_replay(_D(["Complete the following task for the user. Follow the skill and memory ..."]))
+    # programmatic session with no user intent
+    assert _is_kimi_replay(_D([]))
+    # real user session
+    assert not _is_kimi_replay(_D(["SkillOpt 你全局装一下这个"]))
+
+
+def test_harvest_skips_replay_sessions(tmp_path):
+    root = str(tmp_path)
+    replay = [
+        _wire_event("context.append_message", "user",
+                    "Complete the following task for the user. Follow the skill and memory X",
+                    ms=_NOW - 3000),
+    ]
+    _write_session(root, "wd_83773_e9c3dd2644d1", "session_replay", replay)
+    _write_session(root, "wd_358_7051f95cba3a", "session_real", _multi_turn_events())
+    ds = harvest_kimi(root, scope="all", since_iso="2026-01-01T00:00:00.000Z")
+    assert len(ds) == 1
+    assert ds[0].session_id == "session_real"

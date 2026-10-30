@@ -231,6 +231,22 @@ def digest_kimi_session(path: str, project_hint: str = "") -> Optional[SessionDi
     )
 
 
+# Sentinels of the engine's own replay sessions. The kimicode backend spawns
+# `kimi --prompt` per attempt; those CLI runs persist wires into the session
+# store, and without this filter the next night's harvest eats them (#noise).
+_REPLAY_MARKERS = (
+    "Complete the following task for the user. Follow the skill and memory",
+    "[skillopt-sleep:",
+)
+
+
+def _is_kimi_replay(digest: SessionDigest) -> bool:
+    if not digest.user_prompts:
+        return True  # no user intent at all (programmatic session)
+    first = digest.user_prompts[0]
+    return any(m in first for m in _REPLAY_MARKERS)
+
+
 def harvest_kimi(
     sessions_dir: str,
     *,
@@ -260,7 +276,7 @@ def harvest_kimi(
             continue
         if not _kimi_project_matches(digest.project or "", scope, invoked_project):
             continue
-        if _is_agent_session(digest):
+        if _is_agent_session(digest) or _is_kimi_replay(digest):
             continue
         if since_iso and digest.ended_at and digest.ended_at < since_iso:
             continue
