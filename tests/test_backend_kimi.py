@@ -100,3 +100,23 @@ def test_build_backend_routes_kimi_path():
     be = build_backend(backend="kimicode", kimi_path="/opt/kimi/bin/kimi")
     assert isinstance(be, KimiCliBackend)
     assert be.kimi_path == "/opt/kimi/bin/kimi"
+
+
+def test_default_timeout_is_generous_and_env_overridable(monkeypatch):
+    monkeypatch.delenv("SKILLOPT_SLEEP_KIMI_TIMEOUT", raising=False)
+    be = KimiCliBackend(kimi_path="kimi")
+    assert be.timeout == 600  # cold starts under desktop-app load exceed 180s
+    monkeypatch.setenv("SKILLOPT_SLEEP_KIMI_TIMEOUT", "900")
+    be = KimiCliBackend(kimi_path="kimi")
+    assert be.timeout == 900
+
+
+def test_timeout_is_reported_distinctly(monkeypatch):
+    be = KimiCliBackend(kimi_path="/usr/local/bin/kimi")
+    with mock.patch(
+        "skillopt_sleep.backend.subprocess.run",
+        side_effect=subprocess.TimeoutExpired(cmd="kimi", timeout=be.timeout),
+    ):
+        out = be._call("question")
+    assert out == ""
+    assert "timed out" in be.last_call_error

@@ -1158,7 +1158,13 @@ class KimiCliBackend(CliBackend):
 
     name = "kimicode"
 
-    def __init__(self, model: str = "", kimi_path: str = "kimi", timeout: int = 180) -> None:
+    def __init__(self, model: str = "", kimi_path: str = "kimi", timeout: int = 0) -> None:
+        # Cold starts run ~60s unloaded but can exceed 180s when the Kimi
+        # desktop app is busy on the same account/machine; allow an env
+        # override and default to a generous 600s rather than the 180s the
+        # other backends use.
+        if not timeout:
+            timeout = int(os.environ.get("SKILLOPT_SLEEP_KIMI_TIMEOUT", "600") or "600")
         super().__init__(model=model or os.environ.get("SKILLOPT_SLEEP_KIMI_MODEL", ""),
                          timeout=timeout)
         import shutil as _shutil
@@ -1198,6 +1204,14 @@ class KimiCliBackend(CliBackend):
                 cmd, capture_output=True, creationflags=_NO_WINDOW,
                 timeout=self.timeout, cwd=clean_cwd,
             )
+        except subprocess.TimeoutExpired:
+            import logging
+            self.last_call_error = f"Kimi CLI timed out after {self.timeout}s"
+            logging.getLogger("skillopt_sleep").warning(
+                "Kimi CLI call timed out after %ss; consider SKILLOPT_SLEEP_KIMI_TIMEOUT",
+                self.timeout,
+            )
+            return ""
         except Exception as exc:
             import logging
             self.last_call_error = f"Kimi CLI spawn failed: {exc}"
