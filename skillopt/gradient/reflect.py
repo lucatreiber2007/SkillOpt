@@ -27,6 +27,7 @@ import random
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from skillopt.envs.task_output import task_output_segment
 from skillopt.model import chat_optimizer
 from skillopt.optimizer.meta_skill import format_meta_skill_context
 from skillopt.optimizer.skill_aware import (
@@ -46,6 +47,7 @@ from skillopt.optimizer.update_modes import (
 )
 from skillopt.prompts import load_prompt
 from skillopt.utils import extract_json
+from skillopt.utils.text_io import read_text
 
 
 # ── Trajectory formatting ────────────────────────────────────────────────────
@@ -109,6 +111,28 @@ def fmt_trajectory(
 # ── Minibatch trajectory formatting ──────────────────────────────────────────
 
 
+def _task_output_dir(prediction_dir: str, task_id: str) -> str:
+    """Return the directory holding one task's rollout outputs.
+
+    Rollouts write under the portable segment :func:`task_output_segment` maps
+    an unsafe id to (#309), so ``202602:12`` lands in ``_mapped-<sha256>`` and
+    the raw id names nothing. Runs from before #309 still use the raw id as the
+    directory name, so keep reading that layout -- without letting an id such
+    as ``../escape`` read outside ``prediction_dir``.
+    """
+    mapped = os.path.join(
+        prediction_dir, task_output_segment(task_id, map_unsafe=True)
+    )
+    if os.path.isdir(mapped):
+        return mapped
+    legacy = os.path.join(prediction_dir, str(task_id))
+    if os.path.commonpath(
+        [os.path.realpath(prediction_dir), os.path.realpath(legacy)]
+    ) != os.path.realpath(prediction_dir):
+        return mapped
+    return legacy
+
+
 def fmt_minibatch_trajectories(
     items: list[dict],
     prediction_dir: str,
@@ -127,8 +151,8 @@ def fmt_minibatch_trajectories(
     items : list[dict]
         Rollout result dicts belonging to one minibatch.
     prediction_dir : str
-        Path to ``predictions/`` directory containing per-task
-        ``<task_id>/conversation.json`` files.
+        Path to the ``predictions/`` directory holding one directory per task
+        (see :func:`_task_output_dir`), each with its ``conversation.json``.
 
     Returns
     -------
@@ -138,11 +162,11 @@ def fmt_minibatch_trajectories(
     parts: list[str] = []
     for idx, item in enumerate(items, 1):
         tid = str(item["id"])
-        conv_path = os.path.join(prediction_dir, tid, "conversation.json")
+        task_dir = _task_output_dir(prediction_dir, tid)
+        conv_path = os.path.join(task_dir, "conversation.json")
         if not os.path.exists(conv_path):
             continue
-        with open(conv_path) as f:
-            conversation = json.load(f)
+        conversation = json.loads(read_text(conv_path))
         if not conversation:
             continue
 
@@ -167,10 +191,9 @@ def fmt_minibatch_trajectories(
         # ── Append target context (what the agent saw) ──────────────
         target_prompt = item.get("target_system_prompt", "")
         if not target_prompt:
-            prompt_path = os.path.join(prediction_dir, tid, "target_system_prompt.txt")
+            prompt_path = os.path.join(task_dir, "target_system_prompt.txt")
             if os.path.exists(prompt_path):
-                with open(prompt_path) as f:
-                    target_prompt = f.read()
+                target_prompt = read_text(prompt_path)
         if target_prompt:
             header += (
                 f"\n#### Target System Prompt\n"
@@ -179,10 +202,9 @@ def fmt_minibatch_trajectories(
 
         user_prompt = item.get("target_user_prompt", "")
         if not user_prompt:
-            user_prompt_path = os.path.join(prediction_dir, tid, "target_user_prompt.txt")
+            user_prompt_path = os.path.join(task_dir, "target_user_prompt.txt")
             if os.path.exists(user_prompt_path):
-                with open(user_prompt_path) as f:
-                    user_prompt = f.read()
+                user_prompt = read_text(user_prompt_path)
         if user_prompt:
             header += (
                 f"\n#### Target User Prompt\n"
@@ -192,9 +214,9 @@ def fmt_minibatch_trajectories(
         if os.environ.get("REFLACT_CODEX_TRACE_TO_OPTIMIZER", "0") == "1":
             codex_trace_summary = item.get("codex_trace_summary", "")
             if not codex_trace_summary:
-                codex_trace_summary_path = os.path.join(prediction_dir, tid, "codex_trace_summary.txt")
+                codex_trace_summary_path = os.path.join(task_dir, "codex_trace_summary.txt")
                 if os.path.exists(codex_trace_summary_path):
-                    with open(codex_trace_summary_path) as f:
+                    with open(codex_trace_summary_path, encoding="utf-8") as f:
                         codex_trace_summary = f.read()
             if codex_trace_summary:
                 header += (
@@ -215,7 +237,7 @@ def fmt_minibatch_trajectories(
         # Gated like the codex summary above: only the trainer turns it on, and
         # only when the target actually runs on claude_code_exec.
         if os.environ.get("REFLACT_CLAUDE_TRACE_TO_OPTIMIZER", "0") == "1":
-            claude_steps_path = os.path.join(prediction_dir, tid, "claude_trace_steps.txt")
+            claude_steps_path = os.path.join(task_dir, "claude_trace_steps.txt")
             if os.path.exists(claude_steps_path):
                 with open(claude_steps_path, encoding="utf-8") as f:
                     claude_steps = f.read().strip()
@@ -224,10 +246,9 @@ def fmt_minibatch_trajectories(
 
         preview = item.get("spreadsheet_preview", "")
         if not preview:
-            preview_path = os.path.join(prediction_dir, tid, "spreadsheet_preview.txt")
+            preview_path = os.path.join(task_dir, "spreadsheet_preview.txt")
             if os.path.exists(preview_path):
-                with open(preview_path) as f:
-                    preview = f.read()
+                preview = read_text(preview_path)
         if preview:
             header += (
                 f"\n#### Spreadsheet Preview\n"
@@ -573,8 +594,7 @@ def run_minibatch_reflect(
     for idx, batch in enumerate(fail_batches):
         path = os.path.join(patches_dir, f"minibatch_fail_{idx:03d}.json")
         if os.path.exists(path):
-            with open(path) as f:
-                raw_patches.append(json.load(f))
+            raw_patches.append(json.loads(read_text(path)))
         else:
             pending_fail.append((idx, batch))
 
@@ -582,8 +602,7 @@ def run_minibatch_reflect(
     for idx, batch in enumerate(succ_batches):
         path = os.path.join(patches_dir, f"minibatch_succ_{idx:03d}.json")
         if os.path.exists(path):
-            with open(path) as f:
-                raw_patches.append(json.load(f))
+            raw_patches.append(json.loads(read_text(path)))
         else:
             pending_succ.append((idx, batch))
 
@@ -636,7 +655,7 @@ def run_minibatch_reflect(
             tag, patch = fut.result()
             if patch:
                 path = os.path.join(patches_dir, f"{tag}.json")
-                with open(path, "w") as f:
+                with open(path, "w", encoding="utf-8") as f:
                     json.dump(patch, f, ensure_ascii=False, indent=2)
                 raw_patches.append(patch)
             n_edits = len(get_payload_items(patch.get("patch", {}) if patch else {}, update_mode))

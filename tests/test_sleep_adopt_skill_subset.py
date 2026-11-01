@@ -1203,6 +1203,56 @@ class TestSkillProposalsFromGroups(unittest.TestCase):
             self.assertTrue(any("ghost-skill" in note for note in notes))
             self.assertFalse(any("skillopt-sleep-learned" in note for note in notes))
 
+    def test_plugin_qualified_group_stages_under_the_live_directory_name(self):
+        from skillopt_sleep.config import load_config
+        from skillopt_sleep.cycle import _skill_proposals_from_groups
+
+        with tempfile.TemporaryDirectory() as home:
+            claude_home = os.path.join(home, ".claude")
+            live = os.path.join(
+                claude_home, "plugins", "cache", "market", "toolbox", "0.6.4",
+                "skills", "doc-truth", "SKILL.md",
+            )
+            _write(live, "# original\n")
+            cfg = load_config(claude_home=claude_home)
+
+            proposals, notes = _skill_proposals_from_groups(
+                cfg,
+                {"toolbox:doc-truth": _accepted_group(
+                    "toolbox:doc-truth", "# improved\n")},
+                "skillopt-sleep-learned",
+            )
+
+            self.assertEqual(notes, [])
+            self.assertEqual(len(proposals), 1)
+            self.assertEqual(proposals[0].skill_name, "doc-truth")
+            self.assertEqual(proposals[0].live_skill_path, os.path.realpath(live))
+
+    def test_pinned_plugin_path_stages_under_directory_name(self):
+        from skillopt_sleep.config import load_config
+        from skillopt_sleep.cycle import _skill_proposals_from_groups
+
+        with tempfile.TemporaryDirectory() as home:
+            claude_home = os.path.join(home, ".claude")
+            live = os.path.join(
+                claude_home, "plugins", "cache", "market", "toolbox", "0.6.4",
+                "skills", "doc-truth", "SKILL.md",
+            )
+            _write(live, "# original\n")
+            cfg = load_config(claude_home=claude_home)
+
+            proposals, notes = _skill_proposals_from_groups(
+                cfg,
+                {"toolbox:doc-truth": _accepted_group(
+                    "toolbox:doc-truth", "# improved\n")},
+                "skillopt-sleep-learned",
+                resolved_paths={"toolbox:doc-truth": os.path.realpath(live)},
+                resolved_hashes={"toolbox:doc-truth": "known-hash"},
+            )
+
+            self.assertEqual(notes, [])
+            self.assertEqual([proposal.skill_name for proposal in proposals], ["doc-truth"])
+
     def test_skips_a_second_skill_that_resolves_to_the_same_live_file(self):
         from skillopt_sleep.config import load_config
         from skillopt_sleep.cycle import _skill_proposals_from_groups
@@ -2073,6 +2123,24 @@ class TestDurableAdoptionTransaction(unittest.TestCase):
                     [row["target"] for row in json.load(handle)],
                     ["skill", "memory"],
                 )
+
+    def test_legacy_skill_retarget_outside_staged_roots_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            staging, skill, _memory = self._legacy_night(tmp)
+            outside = os.path.join(_canonical(tmp), "outside", "skill", "SKILL.md")
+            _write(outside, "# skill v1\n")
+            manifest_path = os.path.join(staging, "manifest.json")
+            with open(manifest_path, encoding="utf-8") as handle:
+                manifest = json.load(handle)
+            manifest["legacy"]["skill"]["live_path"] = outside
+            manifest["legacy"]["skill"]["live_realpath"] = outside
+            with open(manifest_path, "w", encoding="utf-8") as handle:
+                json.dump(manifest, handle)
+
+            with self.assertRaisesRegex(StagingError, "outside the skills roots"):
+                adopt(staging)
+            self.assertEqual(_read(outside), "# skill v1\n")
+            self.assertEqual(_read(skill), "# skill v1\n")
 
     def test_legacy_missing_targets_can_share_one_new_parent(self):
         with tempfile.TemporaryDirectory() as tmp:

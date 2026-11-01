@@ -2267,6 +2267,33 @@ class TestFullCycleAndAdopt(unittest.TestCase):
                 run_sleep_cycle(cfg, seed_tasks=tasks)
 
 
+class TestGetBackend(unittest.TestCase):
+    """Validation and resolution tests for get_backend() and build_backend()."""
+
+    def test_mock_backend_default(self):
+        from skillopt_sleep.backend import MockBackend, get_backend
+        self.assertIsInstance(get_backend("mock"), MockBackend)
+        self.assertIsInstance(get_backend(""), MockBackend)
+        self.assertIsInstance(get_backend(None), MockBackend)
+        self.assertIsInstance(get_backend("  "), MockBackend)
+
+    def test_unknown_backend_raises_value_error(self):
+        from skillopt_sleep.backend import get_backend
+        with self.assertRaisesRegex(ValueError, "Unknown backend: 'unknown'"):
+            get_backend("unknown")
+        with self.assertRaisesRegex(ValueError, "Unknown backend: 'claud'"):
+            get_backend("claud")
+
+    def test_build_backend_rejects_unknown(self):
+        from skillopt_sleep.backend import build_backend
+        with self.assertRaisesRegex(ValueError, "Unknown backend: 'nonexistent'"):
+            build_backend(backend="nonexistent")
+        with self.assertRaisesRegex(ValueError, "Unknown backend: 'invalid_tgt'"):
+            build_backend(target_backend="invalid_tgt")
+        with self.assertRaisesRegex(ValueError, "Unknown backend: 'invalid_opt'"):
+            build_backend(optimizer_backend="invalid_opt")
+
+
 class TestCopilotBackend(unittest.TestCase):
     """Pure-logic tests for CopilotCliBackend — no `copilot` CLI required."""
 
@@ -2768,7 +2795,10 @@ class TestCursorBackend(unittest.TestCase):
             self.assertIn("Cursor tool-aware replay is temporarily disabled", stderr.getvalue())
             run.assert_not_called()
             self.assertEqual(backend._cache, {})
-            self.assertFalse(os.path.exists(os.path.join(tmp, ".skillopt-sleep")))
+            self.assertEqual(
+                os.listdir(os.path.join(tmp, ".skillopt-sleep")),
+                ["state.json.lock"],
+            )
             self.assertFalse(os.path.exists(os.path.join(project, ".skillopt-sleep")))
             self.assertFalse(os.path.exists(target))
 
